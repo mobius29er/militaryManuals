@@ -40,7 +40,7 @@ jobs:
           if ! gh release view "$ARCHIVE_TAG" >/dev/null 2>&1; then
             gh release create "$ARCHIVE_TAG" --target "$GITHUB_SHA" --draft \
               --title "Field Manual Vault: complete PDF and EPUB archive" \
-              --notes "Download in progress. Publication requires every manual and both formats to pass verification."
+              --notes "Download in progress. Publication requires every manual PDF and all available EPUBs to pass verification."
           fi
           gh release upload "$ARCHIVE_TAG" catalog/manuals.json.gz --clobber
 

@@ -49,6 +49,13 @@ def validate(path, fmt, expected_size=None):
     return {"bytes": size, "sha256": sha256(path)}
 
 
+def missing_epub(exc, fmt, headers):
+    """Only a confirmed HTTP 404 makes an optional EPUB unavailable."""
+    statuses = re.findall(r"(?im)^HTTP/\S+\s+(\d{3})", headers.read_text()) if headers.exists() else []
+    return (fmt == "epub" and isinstance(exc, subprocess.CalledProcessError)
+            and exc.returncode == 22 and bool(statuses) and statuses[-1] == "404")
+
+
 class Bundles:
     def __init__(self, directory, shard, tag):
         self.directory, self.shard, self.tag = directory, shard, tag
@@ -91,6 +98,7 @@ def archive(args):
     with tempfile.TemporaryDirectory() as temp:
         directory = Path(temp)
         old = directory / report_name
+        prior = None
         try:
             gh("release", "download", args.tag, "--pattern", report_name, "--dir", directory)
             prior = json.loads(old.read_text())
@@ -103,7 +111,16 @@ def archive(args):
         report = {"schema_version": 1, "catalog_sha256": fingerprint, "shard": args.shard,
                   "shards": args.shards, "expected_manuals": len(selected),
                   "complete": False, "manuals": [], "errors": [], "archives": []}
+        if (prior and prior.get("catalog_sha256") == fingerprint
+                and prior.get("shards") == args.shards
+                and {r["id"] for r in prior.get("manuals", [])}.issubset(set(expected_ids))):
+            report["manuals"] = prior["manuals"]
+            report["archives"] = prior["archives"]
+        finished = {r["id"] for r in report["manuals"]}
+        selected = [r for r in selected if r["id"] not in finished]
         bundles = Bundles(directory, args.shard, args.tag)
+        bundles.part = max((int(a["name"].rsplit("-", 1)[1].split(".")[0])
+                            for a in report["archives"]), default=0)
         for number, row in enumerate(selected, 1):
             pub_id = row["id"]
             if not re.fullmatch(r"[A-Za-z0-9_.-]+", pub_id):
@@ -112,8 +129,8 @@ def archive(args):
                 pub = parse_html(fetch(row["source_url"]).decode())["pub"]
                 if pub["id"] != pub_id:
                     raise ValueError(f"Unexpected manual ID: {pub['id']}")
-                item = dict(pub, source_url=row["source_url"], files=[])
-                # Download and validate both before adding either file to the archive.
+                item = dict(pub, source_url=row["source_url"], files=[], unavailable_formats=[])
+                # Every manual requires its PDF; confirmed missing EPUBs are reported.
                 downloaded = []
                 for fmt in ("pdf", "epub"):
                     url = pub.get(fmt + "_url")
@@ -123,8 +140,10 @@ def archive(args):
                     source_size = next((x.get("file_size") for x in pub.get("assets", [])
                                         if x["format"] == fmt), None)
                     headers = directory / "response-headers.txt"
+                    checks = None
                     for attempt in range(3):
                         try:
+                            headers.unlink(missing_ok=True)
                             fetch(url, path, headers)
                             final_headers = headers.read_text().strip().split("\n\n")[-1]
                             length = re.search(r"(?im)^content-length:\s*(\d+)", final_headers)
@@ -133,11 +152,18 @@ def archive(args):
                             checks["source_reported_bytes"] = source_size
                             checks["source_size_matches"] = source_size is None or source_size == checks["bytes"]
                             break
-                        except (subprocess.SubprocessError, ValueError, zipfile.BadZipFile, KeyError):
+                        except (subprocess.SubprocessError, ValueError, zipfile.BadZipFile, KeyError) as exc:
                             path.unlink(missing_ok=True)
+                            if missing_epub(exc, fmt, headers):
+                                item["unavailable_formats"].append({"format": fmt, "source_url": url,
+                                                                     "reason": "Source returned HTTP 404"})
+                                print(f"UNAVAILABLE EPUB {pub_id}: source HTTP 404; retaining PDF", flush=True)
+                                break
                             if attempt == 2:
                                 raise
                             time.sleep(5 * (attempt+1))
+                    if checks is None:
+                        continue
                     downloaded.append((fmt, url, path, checks))
                 for fmt, url, path, checks in downloaded:
                     member = f"manuals/{pub_id}/original.{fmt}"
@@ -161,8 +187,8 @@ def archive(args):
                       f"{len(report['errors'])} failed", flush=True)
             time.sleep(0.3)
         bundles.flush()
-        report["archives"] = bundles.assets
-        report["complete"] = not report["errors"] and len(report["manuals"]) == len(selected)
+        report["archives"].extend(bundles.assets)
+        report["complete"] = not report["errors"] and sorted(r["id"] for r in report["manuals"]) == expected_ids
         old.write_text(json.dumps(report, ensure_ascii=False, indent=2)+"\n")
         upload(args.tag, old)
         if not report["complete"]:
@@ -196,9 +222,15 @@ def finalize(args):
                 raise ValueError(f"GitHub checksum mismatch: {archive['name']}")
         total_bytes = sum(f["bytes"] for r in records for f in r["files"])
         file_count = sum(len(r["files"]) for r in records)
+        if any(not any(f["format"] == "pdf" for f in r["files"]) for r in records):
+            raise ValueError("A manual is missing its required PDF")
+        unavailable = [dict(x, manual_id=r["id"]) for r in records for x in r.get("unavailable_formats", [])]
+        pdf_count = sum(f["format"] == "pdf" for r in records for f in r["files"])
+        epub_count = sum(f["format"] == "epub" for r in records for f in r["files"])
         result = {"schema_version": 1, "complete": True, "source": catalog["source"],
                   "catalog_sha256": fingerprint, "manual_count": len(records),
-                  "file_count": file_count, "file_bytes": total_bytes, "archives": archives,
+                  "file_count": file_count, "pdf_count": pdf_count, "epub_count": epub_count,
+                  "unavailable_formats": unavailable, "file_bytes": total_bytes, "archives": archives,
                   "manuals": sorted(records, key=lambda r:r["id"])}
         path = directory / "index.json"
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2)+"\n")
@@ -210,12 +242,14 @@ def finalize(args):
         notes = directory / "release-notes.md"
         notes.write_text(f"Verified archive of {len(records):,} manuals from the "
                          f"[T.REX ARMS Field Manual Vault]({catalog['source']}).\n\n"
-                         f"- {file_count:,} PDF and EPUB files\n"
+                         f"- {pdf_count:,} PDFs and {epub_count:,} EPUBs\n"
+                         f"- {len(unavailable)} EPUBs unavailable at the source; their PDFs are included\n"
                          f"- {total_bytes:,} original file bytes\n"
                          f"- {len(archives)} independent ZIP bundles\n"
                          "- `index.json` maps every manual to its files, checksums, metadata, "
                          "and source URLs\n"
                          "- `SHA256SUMS` verifies the ZIP bundles and index\n\n"
+                         + ("Unavailable source EPUBs: " + ", ".join(x["manual_id"] for x in unavailable) + ".\n\n" if unavailable else "") +
                          "Extract all ZIPs into the same directory. Each manual has its own "
                          "folder under `manuals/`. Historical manuals may be superseded. "
                          "Source distribution and copyright notices are preserved.\n")

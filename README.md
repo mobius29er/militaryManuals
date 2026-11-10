@@ -6,8 +6,8 @@ An archive and analysis-ready catalog of the publications in the
 ## Download status
 
 The [archive workflow](https://github.com/mobius29er/militaryManuals/actions/workflows/archive.yml)
-downloads the full catalog. The release stays a draft until all publications and
-both PDF and EPUB versions pass verification. A catalog alone is not a completed
+downloads the full catalog. The release stays a draft until all publications,
+every PDF and all available EPUB versions pass verification. A catalog alone is not a completed
 download.
 
 After completion, the files are available under
@@ -27,8 +27,9 @@ database or search index for a future app.
 The repository holds code and the complete discovery catalog in
 `catalog/manuals.json.gz` (gzip-compressed JSON). Large binaries are
 stored as independent ZIP release assets below GitHub's per-asset size limit.
-Four download workers run at a time, with retries and delays. Completed shards
-are reused on reruns of the same catalog; incomplete shards are downloaded again.
+Four download workers run at a time, with retries and delays. Completed manuals and their archive bundles are reused on reruns of the same
+catalog. Incomplete shards retry only their missing manuals. A confirmed HTTP
+404 for an EPUB is recorded as unavailable; the PDF is still required and retained.
 Every file is checked against the HTTP response length when supplied, its format,
 and SHA-256. Catalog byte sizes can be stale; discrepancies are recorded in the
 manifest without discarding a complete, valid download.
