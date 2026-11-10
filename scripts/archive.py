@@ -12,6 +12,7 @@ from pathlib import Path
 from vault import fetch, parse_html, sha256, load_catalog
 
 MAX_ARCHIVE = 900 * 1024 * 1024
+MAX_SINGLE_FILE = 2 * 1024 * 1024 * 1024 - 1024 * 1024
 
 
 def gh(*args):
@@ -64,7 +65,7 @@ class Bundles:
 
     def add(self, path, arcname):
         size = path.stat().st_size
-        if size >= MAX_ARCHIVE:
+        if size >= MAX_SINGLE_FILE:
             raise ValueError(f"File exceeds configured archive limit: {arcname}")
         if self.z and self.bytes + size > MAX_ARCHIVE:
             self.flush()

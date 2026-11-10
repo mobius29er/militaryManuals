@@ -103,6 +103,23 @@ class ArchiveTests(unittest.TestCase):
             self.assertEqual(upload.call_count, 2)
             self.assertEqual(len(bundles.assets), 2)
 
+    def test_large_manual_uses_its_own_bundle(self):
+        with tempfile.TemporaryDirectory() as temp, patch("archive.MAX_ARCHIVE", 15), patch("archive.MAX_SINGLE_FILE", 100), patch("archive.upload"):
+            directory = Path(temp)
+            path = directory/"file"
+            bundles = Bundles(directory,0,"test")
+            path.write_bytes(b"x"*10)
+            first = bundles.add(path,"small.pdf")
+            path.write_bytes(b"x"*30)
+            large = bundles.add(path,"large.pdf")
+            path.write_bytes(b"x"*10)
+            last = bundles.add(path,"last.pdf")
+            bundles.flush()
+            self.assertEqual(len({first,large,last}),3)
+            path.write_bytes(b"x"*100)
+            with self.assertRaises(ValueError):
+                bundles.add(path,"too-large.pdf")
+
     def test_checked_in_catalog_has_every_unique_manual(self):
         path = Path(__file__).resolve().parents[1]/"catalog/manuals.json.gz"
         if not path.exists():
