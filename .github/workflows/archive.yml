@@ -1,0 +1,76 @@
+name: Archive all field manuals
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/archive.yml'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'requirements.txt'
+      - 'catalog/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: field-manual-archive
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  ARCHIVE_TAG: vault-2026-11-09
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Create draft archive release
+        run: |
+          if ! gh release view "$ARCHIVE_TAG" >/dev/null 2>&1; then
+            gh release create "$ARCHIVE_TAG" --target "$GITHUB_SHA" --draft \
+              --title "Field Manual Vault: complete PDF and EPUB archive" \
+              --notes "Download in progress. Publication requires every manual and both formats to pass verification."
+          fi
+          gh release upload "$ARCHIVE_TAG" catalog/manuals.json.gz --clobber
+
+  download:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Download, validate and archive PDFs and EPUBs
+        run: python scripts/archive.py download --tag "$ARCHIVE_TAG" --shard "${{ matrix.shard }}" --shards 32
+
+  verify:
+    needs: download
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Verify every manual and publish the archive
+        run: python scripts/archive.py finalize --tag "$ARCHIVE_TAG" --shards 32

@@ -1,0 +1,19 @@
+{
+  "source": "https://www.trex-arms.com/field-manual-vault",
+  "retrieved_at": "2026-11-10T01:13:53Z",
+  "expected_manuals": 4215,
+  "collection_totals": {
+    "current": 726,
+    "recent-archive": 1787,
+    "lessons-learned": 71,
+    "historic": 1631
+  },
+  "unique_manuals": 4215,
+  "catalog_file": "manuals.json.gz",
+  "formats": [
+    "pdf",
+    "epub"
+  ],
+  "download_status": "pending",
+  "known_pdf_bytes": 30227490519
+}
